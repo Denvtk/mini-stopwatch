@@ -406,7 +406,10 @@ class Stopwatch(tk.Tk):
             return "break"
         entry, index = self.editor, self.editor_index
         self.editor = None                      # раньше destroy: FocusOut не должен зациклиться
-        text = entry.get().strip()
+        if isinstance(entry, tk.Text):
+            text = entry.get("1.0", "end-1c").replace("\n", " ").strip()
+        else:
+            text = entry.get().strip()
         entry.destroy()
         if index == TOTAL_COMMENT:
             if save:
@@ -420,30 +423,40 @@ class Stopwatch(tk.Tk):
         return "break"
 
     def edit_total_comment(self) -> None:
-        """Комментарий ко всей серии — строкой под таймером."""
+        """Комментарий ко всей серии — многострочное поле с переносом по словам."""
         self._close_editor(save=True)
-        # на время правки строка пустая и однострочная — поле ввода ложится ровно на неё
-        self.total_label.configure(text="")
+        self.editor_index = TOTAL_COMMENT
+        self.total_label.configure(text=self.total_comment or " ")
         self.total_label.pack(fill="x", after=self.header)
         self._resize()
 
-        entry = tk.Entry(
-            self, font=self.font_row, bg=self.colors["hover"], fg=self.colors["fg"],
-            insertbackground=self.colors["fg"], bd=0, highlightthickness=1,
-            highlightbackground=self.colors["accent"], highlightcolor=self.colors["accent"],
+        editor = tk.Text(
+            self, font=self.font_row, wrap="word", bg=self.colors["hover"],
+            fg=self.colors["fg"], insertbackground=self.colors["fg"], bd=0,
+            highlightthickness=1, highlightbackground=self.colors["accent"],
+            highlightcolor=self.colors["accent"], padx=7, pady=1, undo=True,
         )
-        entry.insert(0, self.total_comment)
-        entry.place(
+        editor.insert("1.0", self.total_comment)
+        self.editor = editor
+        self._fit_total_editor()
+        editor.focus_force()
+        editor.tag_add("sel", "1.0", "end-1c")
+        editor.mark_set("insert", "end-1c")
+        editor.bind("<Return>", lambda _e: self._close_editor(save=True))
+        editor.bind("<Escape>", lambda _e: self._close_editor(save=False))
+        editor.bind("<FocusOut>", lambda _e: self._close_editor(save=True))
+        editor.bind("<KeyRelease>", lambda _e: self._fit_total_editor())
+
+    def _fit_total_editor(self) -> None:
+        """Поле растёт вместе с текстом: высоту считает строка-подложка с wraplength."""
+        if self.editor is None:
+            return
+        self.total_label.configure(text=self.editor.get("1.0", "end-1c") or " ")
+        self._resize()
+        self.editor.place(
             x=1, y=self.total_label.winfo_y(), width=self._content_width() - 2,
             height=self.total_label.winfo_height(),
         )
-        entry.focus_force()
-        entry.select_range(0, "end")
-        entry.bind("<Return>", lambda _e: self._close_editor(save=True))
-        entry.bind("<Escape>", lambda _e: self._close_editor(save=False))
-        entry.bind("<FocusOut>", lambda _e: self._close_editor(save=True))
-        self.editor = entry
-        self.editor_index = TOTAL_COMMENT
 
     def _show_total_row(self) -> None:
         if self.total_comment:
@@ -534,7 +547,10 @@ class Stopwatch(tk.Tk):
         self.attributes("-alpha", alpha)
 
     def _focus(self, _event=None) -> None:
-        self.focus_force()
+        # пока открыт редактор, окно не отбирает фокус: иначе клик внутри поля
+        # ставил фокус на окно, поле теряло его и закрывалось по FocusOut
+        if self.editor is None:
+            self.focus_force()
 
     # --- меню -----------------------------------------------------------
     def _popup_on_row(self, event) -> str:
