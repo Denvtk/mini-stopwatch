@@ -18,6 +18,8 @@ from tkinter import font as tkfont
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
 
+TOTAL_COMMENT = -1  # индекс «строки» общего комментария для редактора
+
 # Значения по умолчанию. Всё, что здесь есть, можно переопределить в config.json —
 # файл переживает сборку в exe, поэтому размеры, шрифты и цвета меняются без пересборки.
 DEFAULTS = {
@@ -121,7 +123,10 @@ class Stopwatch(tk.Tk):
         self.stored = 0.0            # накоплено до текущего запуска
         self.laps: list[float] = []
         self.comments: list[str] = []
+        self.total_comment = ""       # комментарий ко всей серии
+        self.showing_total = False    # после «стоп» в табло висит сумма, а не нули
         self.editor: tk.Entry | None = None
+        self.editor_index = 0         # TOTAL_COMMENT — правится общий комментарий
         self._drag: tuple[int, int] | None = None
 
         # tk знает реальный DPI, только если процесс DPI-aware (см. enable_dpi_awareness)
@@ -175,10 +180,14 @@ class Stopwatch(tk.Tk):
             self.icons["start"], self.toggle, "Старт / пауза (Пробел)"
         )
 
-        for widget in (self, self.header, self.timer_label):
+        # перетаскивание и колесо-прозрачность живут только на верхней полосе:
+        # на всём окне колесо перехватывало прокрутку списка и делало окно прозрачным
+        for widget in (self.header, self.timer_label, self.btn_start, self.btn_lap,
+                       self.btn_stop, self.btn_reset, self.btn_close):
+            widget.bind("<MouseWheel>", self._wheel_alpha)
+        for widget in (self.header, self.timer_label):
             widget.bind("<Button-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
-            widget.bind("<MouseWheel>", self._wheel_alpha)
 
     def _button(self, char: str, command, tip: str) -> tk.Label:
         bg, dim, fg, hover = (
@@ -197,6 +206,12 @@ class Stopwatch(tk.Tk):
         return btn
 
     def _build_list(self) -> None:
+        # общий комментарий переносится по словам во всю ширину окна и растит его вниз
+        self.total_label = tk.Label(
+            self, text="", font=self.font_row, bg=self.colors["list_bg"],
+            fg=self.colors["accent"], anchor="w", justify="left", padx=8, pady=2,
+        )
+        self.total_label.bind("<Double-Button-1>", lambda _e: self.edit_total_comment())
         self.body = tk.Frame(self, bg=self.colors["separator"])
         self.list_box = tk.Listbox(
             self.body, font=self.font_row, bg=self.colors["list_bg"], fg=self.colors["fg"],
@@ -236,13 +251,14 @@ class Stopwatch(tk.Tk):
         self.menu.add_separator()
         self.menu.add_command(label="", command=self.edit_comment)
         self.menu.add_command(label="Очистить комментарий", command=self.clear_comment)
+        self.menu.add_command(label="", command=self.edit_total_comment)
         self.menu.add_separator()
         self.menu.add_command(label="Копировать результаты", command=self.copy_results)
         self.menu.add_command(label="Сохранить в CSV…", command=self.save_csv)
         self.menu.add_separator()
         self.menu.add_command(label="Сброс", command=self.reset)
         self.menu.add_command(label="Выход", command=self.quit_app)
-        self.mi_topmost, self.mi_comment, self.mi_clear = 0, 2, 3
+        self.mi_topmost, self.mi_comment, self.mi_clear, self.mi_total = 0, 2, 3, 4
 
         for widget in (self, self.header, self.timer_label):
             widget.bind("<Button-3>", self._popup)
@@ -253,6 +269,7 @@ class Stopwatch(tk.Tk):
         self.bind("<Return>", lambda _e: self._hotkey(self.lap))
         self.bind("<Control-Return>", lambda _e: self._hotkey(self.stop))
         self.bind("<F2>", lambda _e: self._hotkey(self.edit_comment))
+        self.bind("<Shift-F2>", lambda _e: self._hotkey(self.edit_total_comment))
         self.bind("<Control-r>", lambda _e: self._hotkey(self.reset))
         self.bind("<Control-q>", lambda _e: self._hotkey(self.quit_app))
         self.bind("<Button-1>", self._focus, add="+")
@@ -277,6 +294,7 @@ class Stopwatch(tk.Tk):
         else:
             self.anchor = time.perf_counter()
             self.running = True
+        self.showing_total = False
         self._refresh_header()
 
     def lap(self) -> None:
@@ -285,13 +303,15 @@ class Stopwatch(tk.Tk):
         self.stored = 0.0
         self.anchor = time.perf_counter()
         self.running = True
+        self.showing_total = False
         self._refresh_header()
 
     def stop(self) -> None:
-        """Остановить отсчёт, записав последний отрезок в список."""
+        """Остановить отсчёт: последний отрезок в список, в табло — сумма всей серии."""
         self._record()
         self.running = False
         self.stored = 0.0
+        self.showing_total = bool(self.laps)
         self._refresh_header()
 
     def _record(self) -> bool:
@@ -311,9 +331,12 @@ class Stopwatch(tk.Tk):
                 return
         self._close_editor(save=False)
         self.running = False
+        self.showing_total = False
         self.stored = 0.0
         self.laps.clear()
         self.comments.clear()
+        self.total_comment = ""
+        self._show_total_row()
         self.list_box.delete(0, "end")
         self._resize()
         self._refresh_header()
@@ -383,13 +406,51 @@ class Stopwatch(tk.Tk):
             return "break"
         entry, index = self.editor, self.editor_index
         self.editor = None                      # раньше destroy: FocusOut не должен зациклиться
-        if save and index < len(self.comments):
-            self.comments[index] = entry.get().strip()
-            self._refresh_row(index)
+        text = entry.get().strip()
         entry.destroy()
+        if index == TOTAL_COMMENT:
+            if save:
+                self.total_comment = text
+            self._show_total_row()
+        elif save and index < len(self.comments):
+            self.comments[index] = text
+            self._refresh_row(index)
         self._resize()
         self.focus_force()
         return "break"
+
+    def edit_total_comment(self) -> None:
+        """Комментарий ко всей серии — строкой под таймером."""
+        self._close_editor(save=True)
+        # на время правки строка пустая и однострочная — поле ввода ложится ровно на неё
+        self.total_label.configure(text="")
+        self.total_label.pack(fill="x", after=self.header)
+        self._resize()
+
+        entry = tk.Entry(
+            self, font=self.font_row, bg=self.colors["hover"], fg=self.colors["fg"],
+            insertbackground=self.colors["fg"], bd=0, highlightthickness=1,
+            highlightbackground=self.colors["accent"], highlightcolor=self.colors["accent"],
+        )
+        entry.insert(0, self.total_comment)
+        entry.place(
+            x=1, y=self.total_label.winfo_y(), width=self._content_width() - 2,
+            height=self.total_label.winfo_height(),
+        )
+        entry.focus_force()
+        entry.select_range(0, "end")
+        entry.bind("<Return>", lambda _e: self._close_editor(save=True))
+        entry.bind("<Escape>", lambda _e: self._close_editor(save=False))
+        entry.bind("<FocusOut>", lambda _e: self._close_editor(save=True))
+        self.editor = entry
+        self.editor_index = TOTAL_COMMENT
+
+    def _show_total_row(self) -> None:
+        if self.total_comment:
+            self.total_label.configure(text=self.total_comment)
+            self.total_label.pack(fill="x", after=self.header)
+        else:
+            self.total_label.pack_forget()
 
     def clear_comment(self) -> None:
         index = self._target_row()
@@ -406,10 +467,13 @@ class Stopwatch(tk.Tk):
         self.after(self.behavior["tick_ms"], self._tick)
 
     def _refresh_header(self) -> None:
-        self.timer_label.configure(
-            text=fmt(self.elapsed()),
-            fg=self.colors["running"] if self.running else self.colors["paused"],
-        )
+        if self.showing_total:
+            text, color = fmt(sum(self.laps)), self.colors["fg"]
+        elif self.running:
+            text, color = fmt(self.elapsed()), self.colors["running"]
+        else:
+            text, color = fmt(self.elapsed()), self.colors["paused"]
+        self.timer_label.configure(text=text, fg=color)
         self.btn_start.configure(
             text=self.icons["pause"] if self.running else self.icons["start"]
         )
@@ -420,9 +484,13 @@ class Stopwatch(tk.Tk):
     def _resize(self) -> None:
         rows = len(self.laps)
         width = self._content_width()
+        # перенос по словам считаем от текущей ширины окна
+        self.total_label.configure(wraplength=width - round(18 * self.scale))
+        self.update_idletasks()
+        height = self.total_label.winfo_reqheight() if self.total_label.winfo_manager() else 0
         if rows == 0:
             self.body.pack_forget()
-            height = self.head_h
+            height += self.head_h
         else:
             visible = min(rows, self.win_cfg["max_visible_rows"])
             self.list_box.configure(height=visible)
@@ -433,7 +501,7 @@ class Stopwatch(tk.Tk):
             self.body.pack(fill="both", expand=True)
             # реальная высота списка: расчёт по метрикам шрифта режет нижнюю строку
             self.update_idletasks()
-            height = self.head_h + self.list_box.winfo_reqheight() + 3
+            height += self.head_h + self.list_box.winfo_reqheight() + 3
         # позицию держим сами: winfo_x() до первой отрисовки вернул бы 0
         self.geometry(f"{width}x{height}+{self.pos_x}+{self.pos_y}")
         self.update_idletasks()  # иначе список догоняет ширину окна лишь через кадр
@@ -480,6 +548,10 @@ class Stopwatch(tk.Tk):
         """Подписи и доступность пунктов под текущее состояние."""
         mark = "✔" if self.attributes("-topmost") else "  "
         self.menu.entryconfigure(self.mi_topmost, label=f"{mark} Поверх всех окон")
+        total_action = "Изменить" if self.total_comment else "Добавить"
+        self.menu.entryconfigure(
+            self.mi_total, label=f"{total_action} общий комментарий (Shift+F2)"
+        )
         index = self._target_row()
         if index is None:
             self.menu.entryconfigure(
@@ -573,6 +645,8 @@ class Stopwatch(tk.Tk):
             f"{i}\t{fmt(value)}\t{fmt(total)}\t{comment}"
             for i, value, total, comment in self._rows_for_export()
         ]
+        if self.total_comment:
+            lines.insert(0, self.total_comment)
         self.clipboard_clear()
         self.clipboard_append("\n".join(lines))
 
@@ -585,7 +659,10 @@ class Stopwatch(tk.Tk):
         )
         if not path:
             return
-        lines = ["nomer;otrezok;itogo;sekundy;kommentariy"]
+        lines = []
+        if self.total_comment:
+            lines.append(f"# {self.total_comment.replace(';', ',')}")
+        lines.append("nomer;otrezok;itogo;sekundy;kommentariy")
         for i, value, total, comment in self._rows_for_export():
             seconds = f"{value:.2f}".replace(".", ",")
             safe = comment.replace(";", ",")
