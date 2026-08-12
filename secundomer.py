@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
-APP_DIR = Path(__file__).resolve().parent
+# в собранном exe __file__ ведёт во временную распаковку — конфиг кладём рядом с exe
+APP_DIR = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
 CONFIG_PATH = APP_DIR / "config.json"
 
 TOTAL_COMMENT = -1  # индекс «строки» общего комментария для редактора
