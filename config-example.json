@@ -1,0 +1,56 @@
+{
+  "window": {
+    "x": null,
+    "y": null,
+    "width": 292,
+    "header_height": 40,
+    "max_visible_rows": 8,
+    "comment_width": 150,
+    "alpha": 0.95,
+    "topmost": true
+  },
+  "fonts": {
+    "timer": [
+      "Consolas",
+      15,
+      "bold"
+    ],
+    "row": [
+      "Consolas",
+      10
+    ],
+    "button": [
+      "Segoe UI Symbol",
+      15
+    ],
+    "dialog": [
+      "Segoe UI",
+      9
+    ]
+  },
+  "colors": {
+    "bg": "#1b1e25",
+    "list_bg": "#232732",
+    "fg": "#e9ecf3",
+    "fg_dim": "#8b93a7",
+    "running": "#4ade80",
+    "paused": "#7fb3ff",
+    "hover": "#2f3543",
+    "separator": "#333a49",
+    "accent": "#e0b341"
+  },
+  "icons": {
+    "start": "▶",
+    "pause": "❚❚",
+    "lap": "⊕",
+    "stop": "■",
+    "reset": "↺",
+    "close": "✕"
+  },
+  "behavior": {
+    "confirm_close": true,
+    "confirm_reset": true,
+    "tick_ms": 33,
+    "lap_min_seconds": 0.05
+  }
+}
