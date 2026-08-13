@@ -64,6 +64,12 @@ DEFAULTS = {
         "reset": "↺",
         "close": "✕",
     },
+    "columns": {
+        "show_date": False,        # столбец с системной датой слева от номера круга
+        "show_time": False,        # столбец с системным временем
+        "date_format": "%Y-%m-%d",
+        "time_format": "%H:%M:%S",
+    },
     "behavior": {
         "confirm_close": True,
         "confirm_reset": True,
@@ -118,6 +124,7 @@ class Stopwatch(tk.Tk):
         self.win_cfg = self.cfg["window"]
         self.colors = self.cfg["colors"]
         self.icons = self.cfg["icons"]
+        self.columns = self.cfg["columns"]
         self.behavior = self.cfg["behavior"]
         self.font_timer = tuple(self.cfg["fonts"]["timer"])
         self.font_row = tuple(self.cfg["fonts"]["row"])
@@ -129,6 +136,7 @@ class Stopwatch(tk.Tk):
         self.stored = 0.0            # накоплено до текущего запуска
         self.laps: list[float] = []
         self.comments: list[str] = []
+        self.stamps: list[float] = []  # системное время фиксации круга (time.time())
         self.total_comment = ""       # комментарий ко всей серии
         self.showing_total = False    # после «стоп» в табло висит сумма, а не нули
         self.editor: tk.Entry | None = None
@@ -139,6 +147,11 @@ class Stopwatch(tk.Tk):
         self.scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
         self.base_w = round(self.win_cfg["width"] * self.scale)
         self.comment_w = round(self.win_cfg["comment_width"] * self.scale)
+        # ширину столбцов даты и времени меряем шрифтом, а не задаём числом в конфиге
+        row_font = tkfont.Font(font=self.font_row)
+        now = time.localtime()
+        self.date_w = row_font.measure(time.strftime(self.columns["date_format"], now) + "  ")
+        self.time_w = row_font.measure(time.strftime(self.columns["time_format"], now) + "  ")
         self.head_h = max(
             round(self.win_cfg["header_height"] * self.scale),
             tkfont.Font(font=self.font_timer).metrics("linespace") + round(9 * self.scale),
@@ -255,6 +268,9 @@ class Stopwatch(tk.Tk):
         # состояние показываем прямо в тексте пункта
         self.menu.add_command(label="", command=self._toggle_topmost)
         self.menu.add_separator()
+        self.menu.add_command(label="", command=lambda: self._toggle_column("show_date"))
+        self.menu.add_command(label="", command=lambda: self._toggle_column("show_time"))
+        self.menu.add_separator()
         self.menu.add_command(label="", command=self.edit_comment)
         self.menu.add_command(label="Очистить комментарий", command=self.clear_comment)
         self.menu.add_command(label="", command=self.edit_total_comment)
@@ -264,7 +280,8 @@ class Stopwatch(tk.Tk):
         self.menu.add_separator()
         self.menu.add_command(label="Сброс", command=self.reset)
         self.menu.add_command(label="Выход", command=self.quit_app)
-        self.mi_topmost, self.mi_comment, self.mi_clear, self.mi_total = 0, 2, 3, 4
+        self.mi_topmost, self.mi_date, self.mi_time = 0, 2, 3
+        self.mi_comment, self.mi_clear, self.mi_total = 5, 6, 7
 
         for widget in (self, self.header, self.timer_label):
             widget.bind("<Button-3>", self._popup)
@@ -326,6 +343,7 @@ class Stopwatch(tk.Tk):
             return False
         self.laps.append(value)
         self.comments.append("")
+        self.stamps.append(time.time())
         self.list_box.insert("end", self._row_text(len(self.laps)))
         self._resize()
         self.list_box.see("end")  # только после resize, иначе прокрутка сбрасывается
@@ -341,19 +359,41 @@ class Stopwatch(tk.Tk):
         self.stored = 0.0
         self.laps.clear()
         self.comments.clear()
+        self.stamps.clear()
         self.total_comment = ""
         self._show_total_row()
         self.list_box.delete(0, "end")
         self._resize()
         self._refresh_header()
 
+    def _stamp_parts(self, number: int) -> list[str]:
+        """Столбцы даты и времени слева — те, что включены в меню."""
+        moment = time.localtime(self.stamps[number - 1])
+        parts = []
+        if self.columns["show_date"]:
+            parts.append(time.strftime(self.columns["date_format"], moment))
+        if self.columns["show_time"]:
+            parts.append(time.strftime(self.columns["time_format"], moment))
+        return parts
+
     def _row_text(self, number: int) -> str:
         """number — 1-based номер круга."""
         value = self.laps[number - 1]
         total = sum(self.laps[:number])
-        row = f" {number:>2}  {fmt(value):>9}   Σ {fmt(total)}"
+        parts = self._stamp_parts(number)
+        parts.append(f"{number:>2}  {fmt(value):>9}   Σ {fmt(total)}")
+        row = " " + "  ".join(parts)
         comment = self.comments[number - 1]
         return f"{row}  · {comment}" if comment else row
+
+    def _rebuild_rows(self) -> None:
+        """Перестроить весь список — после переключения столбцов."""
+        selection = self.list_box.curselection()
+        self.list_box.delete(0, "end")
+        for number in range(1, len(self.laps) + 1):
+            self.list_box.insert("end", self._row_text(number))
+        for index in selection:
+            self.list_box.selection_set(index)
 
     def _refresh_row(self, index: int) -> None:
         selected = index in self.list_box.curselection()
@@ -498,7 +538,14 @@ class Stopwatch(tk.Tk):
         )
 
     def _content_width(self) -> int:
-        return self.base_w + (self.comment_w if any(self.comments) else 0)
+        width = self.base_w
+        if self.columns["show_date"]:
+            width += self.date_w
+        if self.columns["show_time"]:
+            width += self.time_w
+        if any(self.comments):
+            width += self.comment_w
+        return width
 
     def _resize(self) -> None:
         rows = len(self.laps)
@@ -568,8 +615,18 @@ class Stopwatch(tk.Tk):
 
     def _sync_menu(self) -> None:
         """Подписи и доступность пунктов под текущее состояние."""
-        mark = "✔" if self.attributes("-topmost") else "  "
-        self.menu.entryconfigure(self.mi_topmost, label=f"{mark} Поверх всех окон")
+        def marked(flag: bool, text: str) -> str:
+            return f"{'✔' if flag else '  '} {text}"
+
+        self.menu.entryconfigure(
+            self.mi_topmost, label=marked(bool(self.attributes("-topmost")), "Поверх всех окон")
+        )
+        self.menu.entryconfigure(
+            self.mi_date, label=marked(self.columns["show_date"], "Показывать дату")
+        )
+        self.menu.entryconfigure(
+            self.mi_time, label=marked(self.columns["show_time"], "Показывать время")
+        )
         total_action = "Изменить" if self.total_comment else "Добавить"
         self.menu.entryconfigure(
             self.mi_total, label=f"{total_action} общий комментарий (Shift+F2)"
@@ -597,6 +654,12 @@ class Stopwatch(tk.Tk):
         finally:
             self.menu.grab_release()
         return "break"
+
+    def _toggle_column(self, key: str) -> None:
+        """Столбцы даты и времени: данные уже записаны, меняется только показ."""
+        self.columns[key] = not self.columns[key]
+        self._rebuild_rows()
+        self._resize()
 
     def _toggle_topmost(self) -> None:
         new_state = not self.attributes("-topmost")
@@ -664,7 +727,7 @@ class Stopwatch(tk.Tk):
         if not self.laps:
             return
         lines = [
-            f"{i}\t{fmt(value)}\t{fmt(total)}\t{comment}"
+            "\t".join(self._stamp_parts(i) + [f"{i}", fmt(value), fmt(total), comment])
             for i, value, total, comment in self._rows_for_export()
         ]
         if self.total_comment:
@@ -684,11 +747,18 @@ class Stopwatch(tk.Tk):
         lines = []
         if self.total_comment:
             lines.append(f"# {self.total_comment.replace(';', ',')}")
-        lines.append("nomer;otrezok;itogo;sekundy;kommentariy")
+        header = []
+        if self.columns["show_date"]:
+            header.append("data")
+        if self.columns["show_time"]:
+            header.append("vremya")
+        header += ["nomer", "otrezok", "itogo", "sekundy", "kommentariy"]
+        lines.append(";".join(header))
         for i, value, total, comment in self._rows_for_export():
             seconds = f"{value:.2f}".replace(".", ",")
             safe = comment.replace(";", ",")
-            lines.append(f"{i};{fmt(value)};{fmt(total)};{seconds};{safe}")
+            cells = self._stamp_parts(i) + [f"{i}", fmt(value), fmt(total), seconds, safe]
+            lines.append(";".join(cells))
         Path(path).write_text("\n".join(lines), encoding="utf-8-sig")
 
     # --- конфиг и выход --------------------------------------------------

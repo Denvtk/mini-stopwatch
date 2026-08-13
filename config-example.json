@@ -47,6 +47,12 @@
     "reset": "↺",
     "close": "✕"
   },
+  "columns": {
+    "show_date": false,
+    "show_time": false,
+    "date_format": "%Y-%m-%d",
+    "time_format": "%H:%M:%S"
+  },
   "behavior": {
     "confirm_close": true,
     "confirm_reset": true,
